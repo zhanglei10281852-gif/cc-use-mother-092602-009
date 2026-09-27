@@ -13,6 +13,7 @@
 - 结果版本：每次成功回执保存不可变结果、指标摘要和内容摘要，任务指向当前结果版本。
 - 人工干预：取消、人工重试、优先级调整和批量操作均保留操作者、原因、前后状态和批次标识。
 - 登录与角色：基础管理模块提供管理员初始化、用户、角色、会话和细粒度权限。
+- 热测试数据管线：按来源批次导入热循环与辐射测试读数（CSV/JSON），逐行校验字段与单位，坏行不阻塞好行；相同读数去重，迟到数据以修订链替换当前值且保留全部历史；按载荷、循环阶段和模型版本分组，用指定规则版本重算峰值温度、有效运行时长与异常次数；原始读数与聚合分表存放，聚合永不覆盖读数；重复批次返回相同摘要，异常解释接口可追溯到具体读数与触发的规则阈值。
 
 ## 运行环境
 
@@ -51,6 +52,20 @@ curl -sS http://127.0.0.1:8432/api/system/health
 
 计算任务摘要位于 `/api/compute/summary`，模板、配额、提交、领取、回执和人工操作接口统一使用 `/api/compute` 前缀。
 
+## 热测试数据管线
+
+统一前缀 `/api/telemetry`：
+
+- `POST /imports`：批次导入，`format=json` 传 `rows` 数组，`format=csv` 传 `content` 文本；`batch_key` 幂等，同内容重放返回相同摘要（HTTP 200），同键不同内容返回 409。摘要含接受/拒绝/去重/修订计数、受影响分组和按 `(row_index, error_code)` 稳定排序的错误报告。
+- `GET /imports/{batch_key}`：按批次键取回同一份摘要。
+- `GET /readings`、`GET /readings/{reading_key}/history`：查询当前原始读数（`include_superseded=true` 含历史）与单条读数的修订链。
+- `POST /rules`、`GET /rules`：注册与查看规则版本（有效阶段、单位白名单、物理量程、异常阈值、有效时长排除标记）。
+- `POST /recomputes`：按规则版本重算聚合，可传 `groups` 限定范围；记录本次使用的规则版本、受影响分组、读数摘要与起止时间。`GET /recomputes`、`GET /recomputes/{id}` 查看历史。
+- `GET /aggregates`：当前聚合（峰值温度、有效运行时长、异常次数），可按分组与规则版本过滤；`GET /aggregates/history` 查看某分组跨重算的变化，用于评估迟到数据对历史结论的影响范围。
+- `GET /anomalies/explain`：按分组解释异常构成，列出贡献读数、触发的规则阈值与是否计入有效时长。
+
+读数行字段：`reading_key, payload_id, cycle_phase, model_version, recorded_at, temperature, temperature_unit, run_duration, duration_unit, anomaly_count`。温度支持 C/F/K 自动归一为摄氏度，时长支持 s/min/h 归一为秒；`anomaly_count` 缺省为 0。
+
 ## 测试
 
 ```bash
@@ -79,6 +94,7 @@ python -m app.cli compute-demo
 ```text
 app/
   compute/         计算模板、配额、任务、结果版本和人工干预
+  telemetry/       热测试读数批次导入、校验去重、迟到修订、按版本重算与异常解释
   api/             用户、角色、认证、审计和系统管理接口
   core/            时钟、安全、异常和分页能力
   repositories/    通用 SQLite 查询
